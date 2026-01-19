@@ -28,12 +28,21 @@
     let
       forAllSystems = nixpkgs.lib.genAttrs (import systems);
 
+      getGoVersion = system: nixpkgs.legacyPackages.${system}.go_latest;
+
       treefmtEval = forAllSystems (
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
         in
-        treefmt-nix.lib.evalModule pkgs ./treefmt.nix
+        treefmt-nix.lib.evalModule pkgs (
+          { ... }:
+          {
+            imports = [ ./nix/treefmt.nix ];
+            # Set environment variable to prevent Go toolchain auto-download
+            settings.global.excludes = [ ];
+          }
+        )
       );
     in
     {
@@ -47,10 +56,14 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          goEnv = gomod2nix.legacyPackages.${system}.mkGoEnv { pwd = ./.; };
+          goVersion = getGoVersion system;
+          goEnv = gomod2nix.legacyPackages.${system}.mkGoEnv {
+            pwd = ./.;
+            go = goVersion;
+          };
         in
-        import ./shell.nix {
-          inherit pkgs goEnv;
+        import ./nix/shell.nix {
+          inherit pkgs goEnv goVersion;
           inherit (gomod2nix.legacyPackages.${system}) gomod2nix;
         }
       );
@@ -59,12 +72,34 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-        in
-        {
-          default = self.packages.${system}.fabric;
-          fabric = pkgs.callPackage ./pkgs/fabric {
+          goVersion = getGoVersion system;
+          fabricSlim = pkgs.callPackage ./nix/pkgs/fabric {
+            go = goVersion;
+            inherit self;
             inherit (gomod2nix.legacyPackages.${system}) buildGoApplication;
           };
+          fabric = pkgs.symlinkJoin {
+            name = "fabric-${fabricSlim.version}";
+            inherit (fabricSlim) version;
+            paths = [
+              fabricSlim
+              pkgs.yt-dlp
+            ];
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+            postBuild = ''
+              wrapProgram $out/bin/fabric \
+                --prefix PATH : $out/bin
+            '';
+            meta = fabricSlim.meta // {
+              description = "${fabricSlim.meta.description} (includes yt-dlp)";
+              mainProgram = "fabric";
+            };
+          };
+        in
+        {
+          default = fabric;
+          inherit fabric;
+          "fabric-slim" = fabricSlim;
           inherit (gomod2nix.legacyPackages.${system}) gomod2nix;
         }
       );
